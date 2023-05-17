@@ -21,26 +21,6 @@ Mix.install(
 ## Node
 
 ```elixir
-node()
-```
-
-<!-- livebook:{"output":true} -->
-
-```
-:"vjibbzg5-livebook_5ln6prt4@DESKTOP-I01NG33"
-```
-
-```elixir
-Node.get_cookie()
-```
-
-<!-- livebook:{"output":true} -->
-
-```
-:"c_aPFg052xOo8yf-08gCUj3aC8SiMV2hD7Ld-dz5Zkg1eCa3sAq2RH"
-```
-
-```elixir
 [%{node: node() |> Atom.to_string(), node_cookie: Node.get_cookie() |> Atom.to_string()}]
 |> Kino.DataTable.new()
 ```
