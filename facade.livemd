@@ -1,0 +1,59 @@
+<!-- livebook:{"app_settings":{"slug":"image"},"persist_outputs":true} -->
+
+# Facade node
+
+```elixir
+Mix.install(
+  [
+    {:kino_bumblebee, "~> 0.3.0"},
+    {:exla, "~> 0.5.1"}
+  ],
+  config: [nx: [default_backend: EXLA.Backend]]
+)
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+:ok
+```
+
+## ResNet
+
+```elixir
+image_input = Kino.Input.image("Image", size: {224, 224})
+form = Kino.Control.form([image: image_input], submit: "Run")
+frame = Kino.Frame.new()
+
+Kino.listen(form, fn %{data: %{image: image}} ->
+  if image do
+    Kino.Frame.render(frame, Kino.Text.new("Running..."))
+
+    Nx.Serving.run(ResNet.build(), ResNet.reshape(image))
+    |> ResNet.for_render()
+    |> then(&Kino.Frame.render(frame, &1))
+  end
+end)
+
+Kino.Layout.grid([form, frame], boxed: true, gap: 16)
+```
+
+## BLIP
+
+```elixir
+image_input = Kino.Input.image("Image", size: {224, 224})
+form = Kino.Control.form([image: image_input], submit: "Run")
+frame = Kino.Frame.new()
+
+Kino.listen(form, fn %{data: %{image: image}} ->
+  if image do
+    Kino.Frame.render(frame, Kino.Text.new("Running..."))
+
+    Nx.Serving.run(BLIP.build(), BLIP.reshape(image))
+    |> BLIP.for_render()
+    |> then(&Kino.Frame.render(frame, Kino.Text.new(&1)))
+  end
+end)
+
+Kino.Layout.grid([form, frame], boxed: true, gap: 16)
+```
