@@ -1,0 +1,211 @@
+# Iris classification
+
+```elixir
+Mix.install([
+  {:nx, "~> 0.6"},
+  {:scholar, "~> 0.2"},
+  {:explorer, "~> 0.7"},
+  #  {:kino_explorer, "~> 0.1"},
+  {:kino_vega_lite, "~> 0.1"},
+  {:scidata, "~> 0.1"},
+  {:exla, "~> 0.5"}
+])
+
+Nx.global_default_backend(EXLA.Backend)
+# Client can also be set to :cuda / :romc
+Nx.Defn.global_default_options(compiler: EXLA, client: :host)
+```
+
+## Section
+
+```elixir
+alias Explorer.DataFrame
+alias Explorer.Datasets
+alias Explorer.Series
+require Explorer.DataFrame
+alias VegaLite, as: Vl
+
+iris_map = %{"Iris-setosa" => 0, "Iris-versicolor" => 1, "Iris-virginica" => 2}
+
+mutate_with_map = fn df, column, map, new_label ->
+  new_series =
+    DataFrame.pull(df, column)
+    |> Series.transform(fn key -> Map.get(map, key) end)
+
+  DataFrame.put(df, new_label, new_series)
+end
+
+raw_datas =
+  Datasets.iris()
+  |> mutate_with_map.(:species, iris_map, :species)
+
+count = raw_datas |> DataFrame.shape() |> elem(0)
+datas = raw_datas |> DataFrame.slice(0, div(count, 10) * 8)
+trains = datas |> DataFrame.select(0..3)
+labels = datas["species"]
+
+validates = raw_datas |> DataFrame.slice(div(count, 10) * 8, div(count, 10) * 2)
+validate_trains = validates |> DataFrame.select(0..3)
+validate_labels = validates["species"]
+```
+
+```elixir
+datas |> Explorer.DataFrame.to_rows()
+```
+
+```elixir
+get_values = fn df, col ->
+  df
+  |> DataFrame.pull(col)
+  |> Series.to_list()
+end
+
+histgram = fn df, col ->
+  x = get_values.(df, col)
+  y = List.duplicate(1, DataFrame.n_rows(df))
+
+  Vl.new(width: 300, height: 100, title: col)
+  |> Vl.data_from_values(x: x, y: y)
+  |> Vl.mark(:bar)
+  |> Vl.encode_field(
+    :x,
+    "x",
+    type: :quantitative,
+    bin: %{maxbins: 20},
+    title: col
+  )
+  |> Vl.encode_field(
+    :y,
+    "y",
+    type: :quantitative,
+    aggregate: :count
+  )
+end
+
+histgram_list =
+  trains.names
+  |> Enum.map(fn col ->
+    histgram.(datas, col)
+  end)
+
+Vl.new(width: 300, height: 100 * Enum.count(trains.names))
+|> Vl.concat(histgram_list, :vertical)
+```
+
+```elixir
+get_species_values = fn df, col, value ->
+  df
+  |> DataFrame.filter_with(&Series.equal(&1["species"], value))
+  |> get_values.(col)
+end
+
+species_histgram = fn species, color ->
+  Vl.new(width: 100, height: 100)
+  |> Vl.mark(:bar, color: color, opacity: 0.5)
+  |> Vl.encode_field(
+    :x,
+    "x#{species}",
+    type: :quantitative,
+    bin: %{maxbins: 20},
+    title: "species#{species}"
+  )
+  |> Vl.encode_field(
+    :y,
+    "y",
+    type: :quantitative,
+    aggregate: :count
+  )
+end
+
+all_species_histgram = fn df, col ->
+  x1 = get_species_values.(df, col, 0)
+  x2 = get_species_values.(df, col, 1)
+  x3 = get_species_values.(df, col, 2)
+  y = List.duplicate(0, DataFrame.n_rows(df))
+
+  Vl.new(width: 100, height: 100, title: col)
+  |> Vl.data_from_values(x1: x1, x2: x2, x3: x3, y: y)
+  |> Vl.layers([
+    species_histgram.(1, :blue),
+    species_histgram.(2, :yellow),
+    species_histgram.(3, :red)
+  ])
+end
+
+all_species_histgram.(datas, "sepal_length")
+
+histgram_list =
+  trains.names
+  |> Enum.map(fn col ->
+    all_species_histgram.(datas, col)
+  end)
+
+Vl.new(width: 100, height: 100 * Enum.count(trains.names))
+|> Vl.concat(histgram_list, :vertical)
+```
+
+```elixir
+scatter = fn df, x_col, y_col ->
+  x = get_values.(df, x_col)
+  y = get_values.(df, y_col)
+  species = get_values.(datas, "species")
+
+  Vl.new(width: 100, height: 100)
+  |> Vl.data_from_values(x: x, y: y, species: species)
+  |> Vl.mark(:point)
+  |> Vl.encode_field(:x, "x",
+    type: :quantitative,
+    scale: [domain: [Enum.min(x), Enum.max(x)]],
+    title: x_col
+  )
+  |> Vl.encode_field(:y, "y",
+    type: :quantitative,
+    scale: [domain: [Enum.min(y), Enum.max(y)]],
+    title: y_col
+  )
+  |> Vl.encode_field(:color, "species", type: :nominal)
+end
+
+graphs =
+  trains.names
+  |> Enum.map(fn col_1 ->
+    h_graphs =
+      trains.names
+      |> Enum.map(fn col_2 ->
+        cond do
+          col_1 == col_2 ->
+            all_species_histgram.(datas, col_1)
+
+          true ->
+            scatter.(datas, col_1, col_2)
+        end
+      end)
+
+    Vl.new(width: 100 * Enum.count(trains.names), height: 100)
+    |> Vl.concat(h_graphs, :horizontal)
+  end)
+
+Vl.new(width: 100 * Enum.count(trains.names), height: 100 * Enum.count(trains.names))
+|> Vl.concat(graphs, :vertical)
+```
+
+```elixir
+alias Scholar.Neighbors.KNearestNeighbors
+alias Scholar.Metrics.Classification
+
+to_tensor = fn df ->
+  df
+  |> DataFrame.names()
+  |> Enum.map(&(Series.to_tensor(df[&1]) |> Nx.new_axis(-1)))
+  |> Nx.concatenate(axis: 1)
+end
+
+x = trains |> to_tensor.()
+y = labels |> Series.to_tensor()
+model = KNearestNeighbors.fit(x, y, num_neighbors: 1, num_classes: 4)
+
+x_validate = validate_trains |> to_tensor.()
+y_validate = validate_labels |> Series.to_tensor()
+predicts = KNearestNeighbors.predict(model, x_validate)
+Classification.accuracy(predicts, y_validate)
+```
