@@ -1,0 +1,854 @@
+<!-- livebook:{"persist_outputs":true} -->
+
+# Titanic classification by EXGBoost
+
+```elixir
+Mix.install([
+  {:exgboost, "~> 0.3"},
+  {:scholar, "~> 0.2"},
+  {:csv, "~> 3.0"},
+  {:exla, "~> 0.6"},
+  {:statistics, "~> 0.6"},
+  {:kino_vega_lite, "~> 0.1"}
+])
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+:ok
+```
+
+## Section
+
+```elixir
+defmodule Pre do
+  def count_missings(datas) do
+    datas
+    |> Enum.flat_map(fn map -> Map.filter(map, &(elem(&1, 1) == "")) |> Map.keys() end)
+    |> Enum.reject(&(&1 == []))
+    |> Enum.frequencies()
+  end
+
+  def separate(datas, id, label) do
+    {
+      datas |> Enum.map(&Map.get(&1, id)),
+      if Map.has_key?(List.first(datas), label) do
+        datas |> Enum.map(&([[String.to_float("#{Map.get(&1, label)}.0")]] |> Nx.tensor()))
+      else
+        nil
+      end,
+      datas |> Enum.map(&Map.drop(&1, [id, label]))
+    }
+  end
+
+  def drop(datas, keys) do
+    datas
+    |> Enum.map(&Map.drop(&1, keys))
+  end
+
+  def empty_replace(datas, replaces_map) do
+    replaces_map
+    |> Enum.reduce(datas, fn {key, replace}, acc ->
+      acc
+      |> Enum.map(&Map.put(&1, key, String.replace(Map.get(&1, key), ~r/^$/, replace)))
+    end)
+  end
+
+  def make_dummies(datas, key) do
+    datas
+    |> Enum.map(&Map.get(&1, key))
+    |> Enum.uniq()
+    |> Enum.with_index(&{&1, String.to_float("#{&2}.0")})
+    |> Enum.into(%{})
+  end
+
+  def to_dummies(datas, train_maps, keys) do
+    keys
+    |> Enum.reduce(datas, fn key, acc ->
+      acc
+      |> Enum.map(
+        &Map.put(
+          &1,
+          key,
+          case make_dummies(train_maps, key)[Map.get(&1, key)] do
+            nil -> 10.0
+            n -> n
+          end
+        )
+      )
+    end)
+  end
+
+  def integer_string_to_float(datas, keys) do
+    keys
+    |> Enum.reduce(datas, fn key, acc ->
+      acc
+      |> Enum.map(
+        &Map.put(
+          &1,
+          key,
+          Map.get(&1, key)
+          |> String.replace(~r/^(?!.*\.).*$/, "\\0\.0")
+          |> String.to_float()
+        )
+      )
+    end)
+  end
+
+  def map_to_tensor(datas) do
+    datas
+    |> Enum.map(&([Map.values(&1)] |> Nx.tensor()))
+  end
+
+  def for_dummies(datas) do
+    datas
+    |> Enum.map(
+      &Map.put(
+        &1,
+        :honor,
+        &1.name |> String.replace(~r/^.*, /, "") |> String.replace(~r/. .*/, "")
+      )
+    )
+    |> drop([:cabin, :name, :ticket])
+    |> empty_replace(%{embarked: "S", age: "30", fare: "32"})
+  end
+
+  def process(datas, train_datas) do
+    for_dummies_train_data = for_dummies(train_datas)
+
+    datas
+    |> for_dummies
+    |> to_dummies(for_dummies_train_data, [:embarked, :sex, :honor])
+    |> integer_string_to_float([:age, :fare, :parch, :pclass, :sibsp])
+    |> map_to_tensor
+  end
+
+  def header_and_csv_datas(path) do
+    [hd | tl] =
+      File.stream!(path)
+      |> CSV.decode!()
+      |> Enum.to_list()
+
+    header =
+      hd
+      |> Enum.map(&(&1 |> String.downcase() |> String.to_atom()))
+
+    {header, tl}
+  end
+
+  def csv_file_to_datas(path) do
+    {header, datas} = header_and_csv_datas(path)
+
+    datas
+    |> Enum.map(&(List.zip([header, &1]) |> Enum.into(%{})))
+    |> Pre.separate(:passengerid, :survived)
+  end
+end
+
+{train_csv_ids, train_csv_labels, train_csv_trains} = Pre.csv_file_to_datas("train.csv")
+
+count = train_csv_trains |> Enum.count()
+
+{trains, validate_trains} =
+  Pre.process(train_csv_trains, train_csv_trains) |> Enum.split(div(count, 10) * 8)
+
+{labels, validate_labels} = train_csv_labels |> Enum.split(div(count, 10) * 8)
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+{[
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [1.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [1.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [1.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [1.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [1.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [1.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [1.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [1.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [1.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [1.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [1.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [1.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [1.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [1.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [1.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [1.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [1.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [1.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [1.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [1.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [1.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [1.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       ...
+     ]
+   >,
+   ...
+ ],
+ [
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [1.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [1.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [1.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [1.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [1.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [1.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [1.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [1.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [1.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [1.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [1.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [1.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [1.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [1.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [1.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [1.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [1.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       [0.0]
+     ]
+   >,
+   #Nx.Tensor<
+     f32[1][1]
+     [
+       ...
+     ]
+   >,
+   ...
+ ]}
+```
+
+```elixir
+alias Scholar.Metrics.Classification
+
+model = EXGBoost.train(trains, labels)
+
+predicts =
+  EXGBoost.predict(model, validate_trains)
+  |> Nx.map([type: :f32], &Nx.greater(&1, 0.5))
+
+y_validate = validate_labels |> Enum.map(&(&1 |> Nx.to_list())) |> List.flatten() |> Nx.tensor()
+Classification.accuracy(predicts, y_validate)
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+#Nx.Tensor<
+  f32
+  0.8603351712226868
+>
+```
+
+```elixir
+{test_csv_ids, _, test_csv_trains} = Pre.csv_file_to_datas("test.csv")
+
+result =
+  Pre.process(test_csv_trains, train_csv_trains)
+  |> Enum.map(&(EXGBoost.predict(model, &1) |> Nx.to_flat_list() |> List.first() |> round))
+  |> then(&Enum.zip(test_csv_ids, &1))
+  |> Enum.map(&[elem(&1, 0), Integer.to_string(elem(&1, 1))])
+  |> then(&[["PassengerId", "Survived"] | &1])
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+[
+  ["PassengerId", "Survived"],
+  ["892", "0"],
+  ["893", "0"],
+  ["894", "0"],
+  ["895", "0"],
+  ["896", "1"],
+  ["897", "0"],
+  ["898", "0"],
+  ["899", "0"],
+  ["900", "1"],
+  ["901", "0"],
+  ["902", "0"],
+  ["903", "0"],
+  ["904", "1"],
+  ["905", "0"],
+  ["906", "1"],
+  ["907", "1"],
+  ["908", "0"],
+  ["909", "0"],
+  ["910", "1"],
+  ["911", "0"],
+  ["912", "0"],
+  ["913", "0"],
+  ["914", "1"],
+  ["915", "1"],
+  ["916", "1"],
+  ["917", "0"],
+  ["918", "1"],
+  ["919", "0"],
+  ["920", "0"],
+  ["921", "0"],
+  ["922", "0"],
+  ["923", "0"],
+  ["924", "1"],
+  ["925", "0"],
+  ["926", "0"],
+  ["927", "0"],
+  ["928", "0"],
+  ["929", "0"],
+  ["930", "0"],
+  ["931", "1"],
+  ["932", "0"],
+  ["933", "1"],
+  ["934", "0"],
+  ["935", "1"],
+  ["936", "1"],
+  ["937", "0"],
+  ["938", "0"],
+  ["939", ...],
+  [...],
+  ...
+]
+```
+
+```elixir
+result
+|> CSV.encode()
+|> Enum.to_list()
+|> then(&File.write("result.csv", &1))
+```
+
+<!-- livebook:{"output":true} -->
+
+```
+:ok
+```
